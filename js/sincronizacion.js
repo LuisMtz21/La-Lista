@@ -85,9 +85,15 @@ export function createSynchronization(client, onSnapshot, onStatus) {
     const operations = await getQueuedOperations(spaceId);
     if (!operations.length) return;
     setStatus('syncing', 'Sincronizando');
-    for (const operation of operations) {
-      await sendOperation(operation);
-      await removeQueuedOperation(operation.id);
+    try {
+      for (const operation of operations) {
+        await sendOperation(operation);
+        await removeQueuedOperation(operation.id);
+      }
+      setStatus('synced', 'Sincronizado');
+    } catch (error) {
+      setStatus('error', 'Error de sincronización');
+      throw error;
     }
   }
 

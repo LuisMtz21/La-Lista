@@ -71,7 +71,7 @@ h1 { margin: 0; font-size: clamp(26px, 4vw, 34px); font-weight: 600; letter-spac
 .list-tab { padding: 9px 13px; border: 0; border-radius: 10px; color: var(--muted); background: transparent; font-size: 13px; font-weight: 600; }
 .list-tab.active { color: var(--accent-dark); background: var(--accent-soft); }
 .lists-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 17px; }
-.list-card { position: relative; min-height: 190px; padding: 20px; overflow: hidden; border: 1px solid var(--line); border-radius: 17px; background: var(--surface); box-shadow: var(--shadow); cursor: pointer; transition: transform .18s ease, box-shadow .18s ease; animation: appear .22s ease both; }
+.list-card { position: relative; min-height: 190px; padding: 20px; overflow: hidden; border: 1px solid var(--line); border-radius: 17px; background: var(--surface); box-shadow: var(--shadow); cursor: pointer; transition: transform .18s ease, box-shadow .18s ease; }
 .list-card:hover { transform: translateY(-3px); box-shadow: 0 13px 30px rgb(46 51 43 / 9%); }
 .card-menu { position: absolute; top: 12px; right: 12px; z-index: 1; }
 .card-menu .icon-button { width: 34px; height: 34px; }
@@ -97,7 +97,7 @@ h1 { margin: 0; font-size: clamp(26px, 4vw, 34px); font-weight: 600; letter-spac
 .add-item-form input::placeholder { color: var(--muted); }
 .add-item-form .btn { padding: 8px 15px; }
 .items-list { max-width: 720px; margin: 0 auto; }
-.item-row { min-height: 55px; padding: 10px 11px; display: flex; align-items: center; gap: 12px; border-bottom: 1px solid var(--line); animation: appear .18s ease both; }
+.item-row { min-height: 55px; padding: 10px 11px; display: flex; align-items: center; gap: 12px; border-bottom: 1px solid var(--line); }
 .item-row:first-child { border-top: 1px solid var(--line); }
 .item-check { width: 20px; height: 20px; flex: none; accent-color: var(--accent); cursor: pointer; }
 .item-text { min-width: 0; flex: 1; overflow-wrap: anywhere; color: var(--text); font-size: 14px; line-height: 1.5; cursor: text; }
@@ -145,7 +145,6 @@ h1 { margin: 0; font-size: clamp(26px, 4vw, 34px); font-weight: 600; letter-spac
 .dropdown-menu { --bs-dropdown-bg: var(--surface); --bs-dropdown-color: var(--text); --bs-dropdown-border-color: var(--line); --bs-dropdown-link-color: var(--text); --bs-dropdown-link-hover-bg: var(--surface-muted); }
 .form-control:focus, .form-select:focus { border-color: var(--accent); box-shadow: 0 0 0 .2rem color-mix(in srgb, var(--accent) 18%, transparent); }
 @keyframes pulse { 50% { opacity: .4; } }
-@keyframes appear { from { transform: translateY(4px); opacity: 0; } to { transform: translateY(0); opacity: 1; } }
 
 @media (max-width: 767px) {
   .app-header { height: 62px; padding: 0 18px; }

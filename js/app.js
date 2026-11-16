@@ -59,8 +59,32 @@ function showError(error, fallback = 'Ocurrió un error. Inténtalo de nuevo.') 
   showToast(message || fallback);
 }
 
+function sameRecords(left, right, fields) {
+  if (left.length !== right.length) return false;
+  const rightById = new Map(right.map((record) => [record.id, record]));
+  return left.every((record) => {
+    const other = rightById.get(record.id);
+    return other && fields.every((field) => {
+      if (!field.startsWith('fecha_')) return record[field] === other[field];
+      return new Date(record[field]).getTime() === new Date(other[field]).getTime();
+    });
+  });
+}
+
+function sameSnapshot(left, right) {
+  return left.espacioId === right.espacioId
+    && sameRecords(left.listas, right.listas, [
+      'id', 'espacio_id', 'titulo', 'fecha_creacion', 'fecha_modificacion', 'archivada'
+    ])
+    && sameRecords(left.elementos, right.elementos, [
+      'id', 'lista_id', 'texto', 'completado', 'orden', 'fecha_creacion', 'fecha_modificacion'
+    ]);
+}
+
 function updateSnapshot(nextSnapshot) {
+  const changed = !sameSnapshot(snapshot, nextSnapshot);
   snapshot = nextSnapshot;
+  if (!changed) return;
   if (!homeView.hidden) renderHome();
   if (!detailView.hidden) renderDetail();
 }
@@ -261,13 +285,12 @@ function showDetail(listId) {
 
 async function commit(action) {
   await action();
-  snapshot = await readSnapshot();
-  updateSnapshot(snapshot);
+  updateSnapshot(await readSnapshot());
   if (!navigator.onLine) {
     setStatus('offline', 'Sin conexión');
     showToast('Guardado en este dispositivo. Se sincronizará al recuperar conexión.');
   } else if (synchronization) {
-    void synchronization.reconnect().catch(showError);
+    void synchronization.flush().catch(showError);
   }
 }
 
@@ -447,30 +470,6 @@ async function loadDevices() {
     return;
   }
 
-  async function verifyDeviceAccess() {
-    if (!client || !currentUser || !spaceId || !navigator.onLine) return;
-    const { data, error } = await client
-      .from('dispositivos')
-      .select('espacio_id')
-      .eq('auth_user_id', currentUser.id)
-      .eq('espacio_id', spaceId)
-      .is('revocado_en', null)
-      .maybeSingle();
-    if (error) {
-      console.error('No se pudo verificar el acceso del dispositivo:', error);
-      setStatus('error', 'Error de sincronización');
-      return;
-    }
-    if (data) return;
-
-    synchronization?.stop();
-    await clearLocalData();
-    snapshot = { espacioId: null, listas: [], elementos: [] };
-    spaceId = null;
-    showSetup('El acceso de este dispositivo fue revocado. Puedes volver a vincularlo con una nueva invitación.');
-    setStatus('error', 'Acceso revocado');
-  }
-
   for (const device of data) {
     const row = document.createElement('div');
     row.className = 'device-row';
@@ -520,6 +519,30 @@ async function loadDevices() {
     }
     deviceList.append(row);
   }
+}
+
+async function verifyDeviceAccess() {
+  if (!client || !currentUser || !spaceId || !navigator.onLine) return;
+  const { data, error } = await client
+    .from('dispositivos')
+    .select('espacio_id')
+    .eq('auth_user_id', currentUser.id)
+    .eq('espacio_id', spaceId)
+    .is('revocado_en', null)
+    .maybeSingle();
+  if (error) {
+    console.error('No se pudo verificar el acceso del dispositivo:', error);
+    setStatus('error', 'Error de sincronización');
+    return;
+  }
+  if (data) return;
+
+  synchronization?.stop();
+  await clearLocalData();
+  snapshot = { espacioId: null, listas: [], elementos: [] };
+  spaceId = null;
+  showSetup('El acceso de este dispositivo fue revocado. Puedes volver a vincularlo con una nueva invitación.');
+  setStatus('error', 'Acceso revocado');
 }
 
 document.getElementById('theme-toggle').addEventListener('click', () => {
