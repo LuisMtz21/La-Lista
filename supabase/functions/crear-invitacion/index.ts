@@ -18,11 +18,18 @@ Deno.serve(async (request: Request) => {
 
   try {
     const { user, supabaseUrl } = await getAuthenticatedUser(request);
+    const body = await request.json();
+    const spaceId = typeof body.espacioId === 'string' ? body.espacioId : '';
+    if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(spaceId)) {
+      return jsonResponse({ error: 'Selecciona un espacio válido para crear la invitación.' }, 400);
+    }
+
     const admin = getAdminClient(supabaseUrl);
     const { data: device, error: deviceError } = await admin
       .from('dispositivos')
       .select('espacio_id')
       .eq('auth_user_id', user.id)
+      .eq('espacio_id', spaceId)
       .is('revocado_en', null)
       .maybeSingle();
 

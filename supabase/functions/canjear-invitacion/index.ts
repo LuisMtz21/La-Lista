@@ -29,7 +29,14 @@ Deno.serve(async (request: Request) => {
     });
     if (error) {
       console.error('canjear-invitacion RPC:', error);
-      return jsonResponse({ error: 'La invitación no es válida o ha vencido.' }, 400);
+      if (error.code === 'P0001') {
+        return jsonResponse({
+          error: 'La invitación ya se usó o venció. Pide que generen un enlace nuevo desde un dispositivo vinculado.'
+        }, 400);
+      }
+      return jsonResponse({
+        error: 'No se pudo vincular el dispositivo. Verifica que este no esté vinculado a otro espacio y solicita otra invitación si hace falta.'
+      }, 400);
     }
 
     return jsonResponse({ espacioId: spaceId });

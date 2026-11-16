@@ -1,6 +1,11 @@
 const DATABASE_NAME = 'la-lista-local';
-const DATABASE_VERSION = 1;
-const SNAPSHOT_KEY = 'shared-space';
+const DATABASE_VERSION = 2;
+const ACTIVE_SNAPSHOT_KEY = 'shared-space';
+const SPACE_SNAPSHOT_PREFIX = 'space:';
+
+function snapshotKey(spaceId) {
+  return spaceId ? `${SPACE_SNAPSHOT_PREFIX}${spaceId}` : ACTIVE_SNAPSHOT_KEY;
+}
 
 function openDatabase() {
   return new Promise((resolve, reject) => {
@@ -12,6 +17,9 @@ function openDatabase() {
       }
       if (!database.objectStoreNames.contains('operations')) {
         database.createObjectStore('operations', { keyPath: 'id', autoIncrement: true });
+      }
+      if (!database.objectStoreNames.contains('spaces')) {
+        database.createObjectStore('spaces', { keyPath: 'id' });
       }
     };
     request.onsuccess = () => resolve(request.result);
@@ -52,17 +60,29 @@ function applyOperation(snapshot, operation) {
   return next;
 }
 
-export async function readSnapshot() {
+export async function readSnapshot(spaceId) {
   const database = await openDatabase();
-  const entry = await requestResult(database.transaction('snapshot').objectStore('snapshot').get(SNAPSHOT_KEY));
+  const store = database.transaction('snapshot').objectStore('snapshot');
+  const requested = store.get(snapshotKey(spaceId));
+  const activeRequest = spaceId ? store.get(ACTIVE_SNAPSHOT_KEY) : null;
+  const [entry, active] = await Promise.all([
+    requestResult(requested),
+    activeRequest ? requestResult(activeRequest) : Promise.resolve(null)
+  ]);
   database.close();
-  return entry?.value || { espacioId: null, listas: [], elementos: [] };
+  if (entry?.value) return entry.value;
+  if (active?.value && active.value.espacioId === spaceId) return active.value;
+  return { espacioId: spaceId || null, listas: [], elementos: [] };
 }
 
-export async function writeSnapshot(snapshot) {
+export async function writeSnapshot(snapshot, shouldSetActive = () => true) {
   const database = await openDatabase();
   const transaction = database.transaction('snapshot', 'readwrite');
-  transaction.objectStore('snapshot').put({ key: SNAPSHOT_KEY, value: snapshot });
+  const store = transaction.objectStore('snapshot');
+  if (shouldSetActive()) store.put({ key: ACTIVE_SNAPSHOT_KEY, value: snapshot });
+  if (snapshot.espacioId) {
+    store.put({ key: snapshotKey(snapshot.espacioId), value: snapshot });
+  }
   await new Promise((resolve, reject) => {
     transaction.oncomplete = resolve;
     transaction.onerror = () => reject(transaction.error || new Error('No se pudo guardar la caché local.'));
@@ -71,15 +91,49 @@ export async function writeSnapshot(snapshot) {
   database.close();
 }
 
-export async function clearLocalData() {
+export async function readSpaces() {
   const database = await openDatabase();
-  const transaction = database.transaction(['snapshot', 'operations'], 'readwrite');
-  transaction.objectStore('snapshot').clear();
-  transaction.objectStore('operations').clear();
+  const spaces = await requestResult(database.transaction('spaces').objectStore('spaces').getAll());
+  database.close();
+  return spaces;
+}
+
+export async function writeSpaces(spaces) {
+  const database = await openDatabase();
+  const transaction = database.transaction('spaces', 'readwrite');
+  const store = transaction.objectStore('spaces');
+  store.clear();
+  for (const space of spaces) store.put(space);
   await new Promise((resolve, reject) => {
     transaction.oncomplete = resolve;
-    transaction.onerror = () => reject(transaction.error || new Error('No se pudieron borrar los datos locales.'));
-    transaction.onabort = () => reject(transaction.error || new Error('Se canceló el borrado local.'));
+    transaction.onerror = () => reject(transaction.error || new Error('No se pudieron guardar los espacios.'));
+    transaction.onabort = () => reject(transaction.error || new Error('Se canceló el guardado de espacios.'));
+  });
+  database.close();
+}
+
+export async function removeSpaceData(spaceId) {
+  const database = await openDatabase();
+  const transaction = database.transaction(['snapshot', 'operations', 'spaces'], 'readwrite');
+  const snapshots = transaction.objectStore('snapshot');
+  snapshots.delete(snapshotKey(spaceId));
+  const activeRequest = snapshots.get(ACTIVE_SNAPSHOT_KEY);
+  activeRequest.onsuccess = () => {
+    if (activeRequest.result?.value?.espacioId === spaceId) snapshots.delete(ACTIVE_SNAPSHOT_KEY);
+  };
+  const operationsStore = transaction.objectStore('operations');
+  const operationsRequest = operationsStore.getAll();
+  operationsRequest.onsuccess = () => {
+    for (const operation of operationsRequest.result) {
+      if (operation.espacio_id === spaceId) operationsStore.delete(operation.id);
+    }
+  };
+  const spaces = transaction.objectStore('spaces');
+  spaces.delete(spaceId);
+  await new Promise((resolve, reject) => {
+    transaction.oncomplete = resolve;
+    transaction.onerror = () => reject(transaction.error || new Error('No se pudieron borrar los datos del espacio.'));
+    transaction.onabort = () => reject(transaction.error || new Error('Se canceló el borrado del espacio.'));
   });
   database.close();
 }
@@ -108,7 +162,7 @@ export async function enqueueOperation(operation) {
   const database = await openDatabase();
   const transaction = database.transaction(['snapshot', 'operations'], 'readwrite');
   const snapshotStore = transaction.objectStore('snapshot');
-  const getRequest = snapshotStore.get(SNAPSHOT_KEY);
+  const getRequest = snapshotStore.get(ACTIVE_SNAPSHOT_KEY);
   let nextSnapshot;
   getRequest.onsuccess = () => {
     const current = getRequest.result;
@@ -117,7 +171,10 @@ export async function enqueueOperation(operation) {
       espacio_id: operation.payload?.espacio_id || current?.value?.espacioId || null
     };
     nextSnapshot = applyOperation(current?.value, queuedOperation);
-    snapshotStore.put({ key: SNAPSHOT_KEY, value: nextSnapshot });
+    snapshotStore.put({ key: ACTIVE_SNAPSHOT_KEY, value: nextSnapshot });
+    if (nextSnapshot.espacioId) {
+      snapshotStore.put({ key: snapshotKey(nextSnapshot.espacioId), value: nextSnapshot });
+    }
     transaction.objectStore('operations').add(queuedOperation);
   };
   await new Promise((resolve, reject) => {
@@ -129,9 +186,9 @@ export async function enqueueOperation(operation) {
   return nextSnapshot;
 }
 
-export async function reconcileSnapshot(serverSnapshot) {
+export async function reconcileSnapshot(serverSnapshot, shouldSave = () => true) {
   const operations = await getQueuedOperations(serverSnapshot.espacioId);
   const merged = operations.reduce(applyOperation, serverSnapshot);
-  await writeSnapshot(merged);
+  await writeSnapshot(merged, shouldSave);
   return merged;
 }

@@ -2,26 +2,26 @@ import {
   getQueuedOperations,
   readSnapshot,
   reconcileSnapshot,
-  removeQueuedOperation,
-  writeSnapshot
+  removeQueuedOperation
 } from './offline.js';
 
 export function createSynchronization(client, onSnapshot, onStatus) {
   let channel = null;
   let spaceId = null;
+  let generation = 0;
   let refreshTimer = null;
-  let refreshing = false;
-  let refreshAgain = false;
+  let refreshingGeneration = null;
+  let refreshAgainGeneration = null;
 
   function setStatus(state, message) {
     onStatus(state, message);
   }
 
-  async function fetchServerSnapshot() {
+  async function fetchServerSnapshot(targetSpaceId) {
     const { data: lists, error: listsError } = await client
       .from('listas')
       .select('id, espacio_id, titulo, fecha_creacion, fecha_modificacion, archivada')
-      .eq('espacio_id', spaceId)
+      .eq('espacio_id', targetSpaceId)
       .order('fecha_creacion', { ascending: false });
     if (listsError) throw listsError;
 
@@ -35,27 +35,34 @@ export function createSynchronization(client, onSnapshot, onStatus) {
       items = data;
     }
 
-    return { espacioId: spaceId, listas: lists, elementos: items };
+    return { espacioId: targetSpaceId, listas: lists, elementos: items };
   }
 
-  async function refresh() {
-    if (refreshing) {
-      refreshAgain = true;
+  async function refresh(expectedGeneration = generation) {
+    if (expectedGeneration !== generation) return;
+    if (refreshingGeneration === expectedGeneration) {
+      refreshAgainGeneration = expectedGeneration;
       return;
     }
-    refreshing = true;
+    const targetSpaceId = spaceId;
+    refreshingGeneration = expectedGeneration;
     try {
-      const serverSnapshot = await fetchServerSnapshot();
-      const snapshot = await reconcileSnapshot(serverSnapshot);
+      const serverSnapshot = await fetchServerSnapshot(targetSpaceId);
+      if (expectedGeneration !== generation || targetSpaceId !== spaceId) return;
+      const snapshot = await reconcileSnapshot(
+        serverSnapshot,
+        () => expectedGeneration === generation && targetSpaceId === spaceId
+      );
+      if (expectedGeneration !== generation || targetSpaceId !== spaceId) return;
       onSnapshot(snapshot);
       setStatus(navigator.onLine ? 'synced' : 'offline', navigator.onLine ? 'Sincronizado' : 'Sin conexión');
     } finally {
-      refreshing = false;
-      if (refreshAgain) {
-        refreshAgain = false;
-        void refresh().catch((error) => {
+      if (refreshingGeneration === expectedGeneration) refreshingGeneration = null;
+      if (refreshAgainGeneration === expectedGeneration) {
+        refreshAgainGeneration = null;
+        if (expectedGeneration === generation) void refresh(expectedGeneration).catch((error) => {
           console.error('La actualización de listas falló:', error);
-          setStatus('error', 'Error de sincronización');
+          if (expectedGeneration === generation) setStatus('error', 'Error de sincronización');
         });
       }
     }
@@ -77,72 +84,83 @@ export function createSynchronization(client, onSnapshot, onStatus) {
     if (result.error) throw result.error;
   }
 
-  async function flush() {
-    if (!navigator.onLine || !spaceId) {
+  async function flush(expectedGeneration = generation) {
+    if (expectedGeneration !== generation) return;
+    const targetSpaceId = spaceId;
+    if (!navigator.onLine || !targetSpaceId) {
       setStatus('offline', 'Sin conexión');
       return;
     }
-    const operations = await getQueuedOperations(spaceId);
+    const operations = await getQueuedOperations(targetSpaceId);
+    if (expectedGeneration !== generation || targetSpaceId !== spaceId) return;
     if (!operations.length) return;
     setStatus('syncing', 'Sincronizando');
     try {
       for (const operation of operations) {
+        if (expectedGeneration !== generation || targetSpaceId !== spaceId) return;
         await sendOperation(operation);
         await removeQueuedOperation(operation.id);
       }
-      setStatus('synced', 'Sincronizado');
+      if (expectedGeneration === generation) setStatus('synced', 'Sincronizado');
     } catch (error) {
-      setStatus('error', 'Error de sincronización');
+      if (expectedGeneration === generation) setStatus('error', 'Error de sincronización');
       throw error;
     }
   }
 
-  async function synchronize() {
+  async function synchronize(expectedGeneration = generation) {
+    if (expectedGeneration !== generation) return;
     if (!navigator.onLine) {
       setStatus('offline', 'Sin conexión');
       return;
     }
     setStatus('syncing', 'Sincronizando');
     try {
-      await flush();
-      await refresh();
+      await flush(expectedGeneration);
+      if (expectedGeneration === generation) await refresh(expectedGeneration);
     } catch (error) {
+      if (expectedGeneration !== generation) throw error;
       console.error('La sincronización falló:', error);
       setStatus('error', 'Error de sincronización');
       throw error;
     }
   }
 
-  function scheduleRefresh() {
+  function scheduleRefresh(expectedGeneration = generation) {
     if (refreshTimer) clearTimeout(refreshTimer);
     refreshTimer = setTimeout(() => {
       refreshTimer = null;
-      if (!navigator.onLine) return;
-      void refresh().catch((error) => {
+      if (!navigator.onLine || expectedGeneration !== generation) return;
+      void refresh(expectedGeneration).catch((error) => {
         console.error('La actualización en tiempo real falló:', error);
-        setStatus('error', 'Error de sincronización');
+        if (expectedGeneration === generation) setStatus('error', 'Error de sincronización');
       });
     }, 140);
   }
 
   async function start(id) {
+    stop();
     spaceId = id;
-    const cached = await readSnapshot();
+    const expectedGeneration = generation;
+    const cached = await readSnapshot(id);
+    if (expectedGeneration !== generation) return;
     if (cached.espacioId === id) onSnapshot(cached);
 
     if (navigator.onLine) {
       try {
-        await synchronize();
+        await synchronize(expectedGeneration);
       } catch {
         // Keep the cached view available while the connection recovers.
       }
+      if (expectedGeneration !== generation) return;
       channel = client.channel(`listas-${id}`)
-        .on('postgres_changes', { event: '*', schema: 'public', table: 'listas', filter: `espacio_id=eq.${id}` }, scheduleRefresh)
-        .on('postgres_changes', { event: '*', schema: 'public', table: 'elementos' }, scheduleRefresh)
+        .on('postgres_changes', { event: '*', schema: 'public', table: 'listas', filter: `espacio_id=eq.${id}` }, () => scheduleRefresh(expectedGeneration))
+        .on('postgres_changes', { event: '*', schema: 'public', table: 'elementos' }, () => scheduleRefresh(expectedGeneration))
         .subscribe((status) => {
+          if (expectedGeneration !== generation) return;
           if (status === 'SUBSCRIBED') {
             setStatus('synced', 'Sincronizado');
-            scheduleRefresh();
+            scheduleRefresh(expectedGeneration);
           } else if (status === 'CHANNEL_ERROR' || status === 'TIMED_OUT') {
             setStatus('error', 'Error de sincronización');
           }
@@ -154,14 +172,17 @@ export function createSynchronization(client, onSnapshot, onStatus) {
 
   async function reconnect() {
     if (!spaceId) return;
-    await synchronize();
+    await synchronize(generation);
   }
 
   function stop() {
+    generation += 1;
     if (refreshTimer) clearTimeout(refreshTimer);
     if (channel) void client.removeChannel(channel);
     channel = null;
     spaceId = null;
+    refreshingGeneration = null;
+    refreshAgainGeneration = null;
   }
 
   return { start, reconnect, stop, refresh, flush };

@@ -1,7 +1,13 @@
 import { createSupabaseClient, getDeviceName, isSupabaseConfigured } from './supabase.js';
 import { createList, deleteList, renameList, setListArchived } from './listas.js';
 import { createItem, deleteItem, updateItem } from './elementos.js';
-import { clearLocalData, readSnapshot, writeSnapshot } from './offline.js';
+import {
+  readSnapshot,
+  readSpaces,
+  removeSpaceData,
+  writeSnapshot,
+  writeSpaces
+} from './offline.js';
 import { createSynchronization } from './sincronizacion.js';
 
 const setupView = document.getElementById('setup-view');
@@ -21,9 +27,15 @@ let spaceId = null;
 let snapshot = { espacioId: null, listas: [], elementos: [] };
 let currentListId = null;
 let currentTab = 'active';
+let availableSpaces = [];
 let sortMode = localStorage.getItem('la-lista-sort') || 'created';
 let bootPromise = null;
 let toastTimer = null;
+const listCardCache = new Map();
+const itemRowCache = new Map();
+const itemsContainer = document.getElementById('items-list');
+let completedHeading = null;
+let emptyItemsHint = null;
 
 function setStatus(state, label) {
   syncStatus.dataset.state = state;
@@ -38,6 +50,7 @@ function showToast(message) {
 }
 
 function showSetup(message = '') {
+  document.getElementById('spaces-button').hidden = !availableSpaces.length;
   setupView.hidden = false;
   homeView.hidden = true;
   detailView.hidden = true;
@@ -57,6 +70,19 @@ function showError(error, fallback = 'Ocurrió un error. Inténtalo de nuevo.') 
   console.error(error);
   const message = error instanceof Error ? error.message : fallback;
   showToast(message || fallback);
+}
+
+async function getFunctionErrorMessage(error) {
+  const response = error?.context;
+  if (response && typeof response.clone === 'function') {
+    try {
+      const body = await response.clone().json();
+      if (typeof body?.error === 'string') return body.error;
+    } catch {
+      // Use the function client's message when the response is not JSON.
+    }
+  }
+  return error?.message || 'No se pudo completar la solicitud.';
 }
 
 function sameRecords(left, right, fields) {
@@ -94,20 +120,91 @@ function formatDate(value) {
     .format(new Date(value));
 }
 
+function renderSpaces() {
+  const container = document.getElementById('spaces-list');
+  if (!container) return;
+  const rows = availableSpaces.map((space) => {
+    const row = document.createElement('div');
+    row.className = 'space-row';
+    const select = document.createElement('button');
+    select.className = `space-select${space.id === spaceId ? ' current' : ''}`;
+    select.type = 'button';
+    select.dataset.spaceSelect = space.id;
+    const label = document.createElement('span');
+    label.className = 'space-select-label';
+    const name = document.createElement('strong');
+    const spaceName = space.nombre || `Espacio ${space.id.slice(0, 4)}`;
+    name.textContent = spaceName;
+    const meta = document.createElement('small');
+    meta.textContent = space.fecha_vinculacion
+      ? `Vinculado ${formatDate(space.fecha_vinculacion)}`
+      : 'Listas compartidas';
+    label.append(name, meta);
+    select.append(label);
+    if (space.id === spaceId) {
+      const current = document.createElement('span');
+      current.className = 'space-current';
+      current.textContent = 'Actual';
+      select.append(current);
+    }
+
+    const leave = document.createElement('button');
+    leave.className = 'icon-button space-leave';
+    leave.type = 'button';
+    leave.dataset.spaceLeave = space.id;
+    leave.setAttribute('aria-label', `Salir de ${spaceName}`);
+    leave.title = 'Salir de este espacio';
+    leave.textContent = '×';
+    row.append(select, leave);
+    return row;
+  });
+  reconcileChildren(container, rows);
+  document.getElementById('spaces-button').hidden = !availableSpaces.length;
+  document.getElementById('spaces-button').setAttribute(
+    'aria-label',
+    `Espacios${availableSpaces.length > 1 ? `, ${availableSpaces.length} disponibles` : ''}`
+  );
+}
+
+async function addSpace(id, properties = {}) {
+  const previous = availableSpaces.find((space) => space.id === id);
+  availableSpaces = [
+    ...availableSpaces.filter((space) => space.id !== id),
+    {
+      ...previous,
+      ...properties,
+      id,
+      nombre: properties.nombre || previous?.nombre || `Espacio ${id.slice(0, 4)}`
+    }
+  ];
+  await writeSpaces(availableSpaces);
+  renderSpaces();
+}
+
+function reconcileChildren(container, desiredChildren) {
+  let position = container.firstElementChild;
+  for (const child of desiredChildren) {
+    if (child !== position) container.insertBefore(child, position);
+    position = child.nextElementSibling;
+  }
+  while (position) {
+    const next = position.nextElementSibling;
+    position.remove();
+    position = next;
+  }
+}
+
 function itemCounts(listId) {
   const items = snapshot.elementos.filter((item) => item.lista_id === listId);
   return { total: items.length, complete: items.filter((item) => item.completado).length };
 }
 
 function createCard(list) {
-  const counts = itemCounts(list.id);
   const card = document.createElement('article');
   card.className = 'list-card';
   card.tabIndex = 0;
   card.setAttribute('role', 'button');
-  card.setAttribute('aria-label', `Abrir lista ${list.titulo}`);
   card.dataset.listId = list.id;
-  const progress = counts.total ? Math.round((counts.complete / counts.total) * 100) : 0;
   card.innerHTML = `
     <div class="card-menu dropdown">
       <button class="icon-button" type="button" data-bs-toggle="dropdown" aria-expanded="false" aria-label="Opciones de ${escapeHtml(list.titulo)}">
@@ -115,18 +212,33 @@ function createCard(list) {
       </button>
       <ul class="dropdown-menu dropdown-menu-end">
         <li><button class="dropdown-item" type="button" data-list-action="rename">Cambiar título</button></li>
-        <li><button class="dropdown-item" type="button" data-list-action="${list.archivada ? 'restore' : 'archive'}">${list.archivada ? 'Recuperar lista' : 'Archivar lista'}</button></li>
+        <li><button class="dropdown-item" type="button" data-list-action="archive"></button></li>
         <li><hr class="dropdown-divider"></li>
         <li><button class="dropdown-item text-danger" type="button" data-list-action="delete">Eliminar lista</button></li>
       </ul>
     </div>
-    <h2 class="card-title">${escapeHtml(list.titulo)}</h2>
-    <p class="card-date">${formatDate(list.fecha_creacion)}</p>
+    <h2 class="card-title"></h2>
+    <p class="card-date"></p>
     <div class="card-progress">
-      <span>${counts.complete} de ${counts.total} elementos</span>
-      <div class="progress-track" aria-label="${progress}% completado"><div class="progress-fill" style="width:${progress}%"></div></div>
+      <span></span>
+      <div class="progress-track"><div class="progress-fill"></div></div>
     </div>`;
   return card;
+}
+
+function updateCard(card, list) {
+  const counts = itemCounts(list.id);
+  const progress = counts.total ? Math.round((counts.complete / counts.total) * 100) : 0;
+  card.setAttribute('aria-label', `Abrir lista ${list.titulo}`);
+  card.querySelector('.card-menu > button').setAttribute('aria-label', `Opciones de ${list.titulo}`);
+  card.querySelector('.card-title').textContent = list.titulo;
+  card.querySelector('.card-date').textContent = formatDate(list.fecha_creacion);
+  card.querySelector('.card-progress > span').textContent = `${counts.complete} de ${counts.total} elementos`;
+  card.querySelector('.progress-track').setAttribute('aria-label', `${progress}% completado`);
+  card.querySelector('.progress-fill').style.width = `${progress}%`;
+  const archiveAction = card.querySelector('[data-list-action="archive"], [data-list-action="restore"]');
+  archiveAction.dataset.listAction = list.archivada ? 'restore' : 'archive';
+  archiveAction.textContent = list.archivada ? 'Recuperar lista' : 'Archivar lista';
 }
 
 function escapeHtml(value) {
@@ -142,7 +254,23 @@ function renderHome() {
     .filter((list) => list.archivada === isArchived)
     .filter((list) => list.titulo.toLocaleLowerCase('es').includes(query))
     .sort((left, right) => new Date(right.fecha_creacion) - new Date(left.fecha_creacion));
-  listsGrid.replaceChildren(...lists.map(createCard));
+  const existingIds = new Set(snapshot.listas.map((list) => list.id));
+  for (const [id, card] of listCardCache) {
+    if (!existingIds.has(id)) {
+      card.remove();
+      listCardCache.delete(id);
+    }
+  }
+  const cards = lists.map((list) => {
+    let card = listCardCache.get(list.id);
+    if (!card) {
+      card = createCard(list);
+      listCardCache.set(list.id, card);
+    }
+    updateCard(card, list);
+    return card;
+  });
+  reconcileChildren(listsGrid, cards);
   listsGrid.hidden = lists.length === 0;
   emptyState.hidden = lists.length > 0;
 
@@ -187,12 +315,16 @@ function beginEditItem(item, textElement) {
     finished = true;
     const text = input.value.trim();
     input.replaceWith(textElement);
-    if (save && text && text !== item.texto) {
+    const latestItem = snapshot.elementos.find((entry) => entry.id === item.id) || item;
+    if (save && text && text !== latestItem.texto) {
+      textElement.textContent = text;
       try {
         await commit(() => updateItem(item.id, { texto: text }));
       } catch (error) {
         showError(error);
       }
+    } else {
+      textElement.textContent = latestItem.texto;
     }
   };
   input.addEventListener('keydown', (event) => {
@@ -204,42 +336,64 @@ function beginEditItem(item, textElement) {
       void finish(false);
     }
   });
+  itemsContainer.addEventListener('keydown', (event) => {
+    const text = event.target.closest('[data-item-action="edit"]');
+    if (!text || (event.key !== 'Enter' && event.key !== ' ')) return;
+    event.preventDefault();
+    const item = snapshot.elementos.find((entry) => entry.id === text.dataset.itemId);
+    if (item) beginEditItem(item, text);
+  });
   input.addEventListener('blur', () => void finish(true));
 }
 
 function createItemRow(item) {
   const row = document.createElement('div');
-  row.className = `item-row${item.completado ? ' completed' : ''}`;
+  row.className = 'item-row';
+  row.dataset.itemId = item.id;
   const checkbox = document.createElement('input');
   checkbox.type = 'checkbox';
   checkbox.className = 'item-check';
-  checkbox.checked = item.completado;
-  checkbox.setAttribute('aria-label', item.completado ? `Desmarcar ${item.texto}` : `Completar ${item.texto}`);
   checkbox.dataset.itemAction = 'toggle';
-  checkbox.dataset.itemId = item.id;
 
   const text = document.createElement('span');
   text.className = 'item-text';
-  text.textContent = item.texto;
   text.tabIndex = 0;
   text.setAttribute('role', 'button');
-  text.setAttribute('aria-label', `Editar ${item.texto}`);
-  text.addEventListener('click', () => beginEditItem(item, text));
-  text.addEventListener('keydown', (event) => {
-    if (event.key === 'Enter' || event.key === ' ') {
-      event.preventDefault();
-      beginEditItem(item, text);
-    }
-  });
+  text.dataset.itemAction = 'edit';
 
   const remove = document.createElement('button');
   remove.type = 'button';
   remove.className = 'icon-button item-delete';
   remove.textContent = '×';
-  remove.setAttribute('aria-label', `Eliminar ${item.texto}`);
   remove.dataset.itemAction = 'delete';
-  remove.dataset.itemId = item.id;
   row.append(checkbox, text, remove);
+  return row;
+}
+
+function updateItemRow(row, item) {
+  row.classList.toggle('completed', item.completado);
+  const checkbox = row.querySelector('.item-check');
+  checkbox.checked = item.completado;
+  checkbox.dataset.itemId = item.id;
+  checkbox.setAttribute('aria-label', item.completado ? `Desmarcar ${item.texto}` : `Completar ${item.texto}`);
+  const text = row.querySelector('.item-text');
+  if (text) {
+    text.textContent = item.texto;
+    text.dataset.itemId = item.id;
+    text.setAttribute('aria-label', `Editar ${item.texto}`);
+  }
+  const remove = row.querySelector('.item-delete');
+  remove.dataset.itemId = item.id;
+  remove.setAttribute('aria-label', `Eliminar ${item.texto}`);
+}
+
+function getItemRow(item) {
+  let row = itemRowCache.get(item.id);
+  if (!row) {
+    row = createItemRow(item);
+    itemRowCache.set(item.id, row);
+  }
+  updateItemRow(row, item);
   return row;
 }
 
@@ -257,22 +411,33 @@ function renderDetail() {
   document.getElementById('sort-select').value = sortMode;
   document.getElementById('archive-list-button').textContent = list.archivada ? 'Recuperar lista' : 'Archivar lista';
 
-  const pending = items.filter((item) => !item.completado).map(createItemRow);
-  const completed = items.filter((item) => item.completado).map(createItemRow);
+  const visibleIds = new Set(snapshot.elementos.map((item) => item.id));
+  for (const [id, row] of itemRowCache) {
+    if (!visibleIds.has(id)) {
+      row.remove();
+      itemRowCache.delete(id);
+    }
+  }
+  const pending = items.filter((item) => !item.completado).map(getItemRow);
+  const completed = items.filter((item) => item.completado).map(getItemRow);
   const rows = [...pending];
   if (completed.length) {
-    const heading = document.createElement('h2');
-    heading.className = 'completed-label';
-    heading.textContent = 'Completados';
-    rows.push(heading, ...completed);
+    if (!completedHeading) {
+      completedHeading = document.createElement('h2');
+      completedHeading.className = 'completed-label';
+      completedHeading.textContent = 'Completados';
+    }
+    rows.push(completedHeading, ...completed);
   }
   if (!items.length) {
-    const hint = document.createElement('p');
-    hint.className = 'empty-hint text-center py-4';
-    hint.textContent = 'Agrega el primer elemento a esta lista.';
-    rows.push(hint);
+    if (!emptyItemsHint) {
+      emptyItemsHint = document.createElement('p');
+      emptyItemsHint.className = 'empty-hint text-center py-4';
+      emptyItemsHint.textContent = 'Agrega el primer elemento a esta lista.';
+    }
+    rows.push(emptyItemsHint);
   }
-  document.getElementById('items-list').replaceChildren(...rows);
+  reconcileChildren(itemsContainer, rows);
 }
 
 function showDetail(listId) {
@@ -312,13 +477,11 @@ async function ensureSession() {
 }
 
 async function showWorkspace(space) {
-  if (snapshot.espacioId && snapshot.espacioId !== space) {
-    snapshot = { espacioId: space, listas: [], elementos: [] };
-  } else {
-    snapshot.espacioId = space;
-  }
-  await writeSnapshot(snapshot);
+  synchronization?.stop();
   spaceId = space;
+  snapshot = await readSnapshot(space);
+  await writeSnapshot(snapshot);
+  renderSpaces();
   if (!synchronization) {
     synchronization = createSynchronization(client, updateSnapshot, setStatus);
   }
@@ -344,8 +507,9 @@ async function redeemInvitation(input) {
   const { data, error } = await client.functions.invoke('canjear-invitacion', {
     body: { codigo: code, nombreDispositivo: getDeviceName() }
   });
-  if (error) throw error;
+  if (error) throw new Error(await getFunctionErrorMessage(error));
   if (!data?.espacioId) throw new Error('No se pudo vincular este dispositivo.');
+  await addSpace(data.espacioId);
   history.replaceState(null, '', location.pathname);
   await showWorkspace(data.espacioId);
   showToast('Dispositivo vinculado.');
@@ -355,6 +519,8 @@ async function boot() {
   if (bootPromise) return bootPromise;
   bootPromise = (async () => {
     snapshot = await readSnapshot();
+    availableSpaces = await readSpaces();
+    renderSpaces();
     if (!isSupabaseConfigured()) {
       showSetup('Configura la URL y la clave pública anon de Supabase en js/config.js.');
       setStatus('error', 'Falta configurar Supabase');
@@ -367,9 +533,8 @@ async function boot() {
       session = await ensureSession();
     } catch (error) {
       if (!navigator.onLine && snapshot.espacioId) {
-        spaceId = snapshot.espacioId;
-        updateSnapshot(snapshot);
-        showHome();
+        await addSpace(snapshot.espacioId);
+        await showWorkspace(snapshot.espacioId);
         setStatus('offline', 'Sin conexión');
         return;
       }
@@ -380,53 +545,63 @@ async function boot() {
 
     currentUser = session.user;
     if (!navigator.onLine && snapshot.espacioId) {
-      spaceId = snapshot.espacioId;
-      showHome();
+      if (!availableSpaces.some((space) => space.id === snapshot.espacioId)) {
+        await addSpace(snapshot.espacioId);
+      }
+      await showWorkspace(snapshot.espacioId);
       setStatus('offline', 'Sin conexión');
       return;
     }
 
-    let device;
-    const { data, error } = await client
+    const { data: devices, error } = await client
       .from('dispositivos')
       .select('espacio_id')
       .eq('auth_user_id', currentUser.id)
       .is('revocado_en', null)
-      .maybeSingle();
+      .order('fecha_vinculacion', { ascending: true });
     if (error) {
       showSetup(`No se pudo consultar el espacio: ${error.message}`);
       setStatus('error', 'Error de sincronización');
       return;
     }
-    device = data;
-    if (device) {
-      await showWorkspace(device.espacio_id);
-      return;
-    }
-
-    if (snapshot.espacioId) {
-      await clearLocalData();
-      snapshot = { espacioId: null, listas: [], elementos: [] };
-    }
+    availableSpaces = devices.map((device) => ({
+      id: device.espacio_id,
+      nombre: `Espacio ${device.espacio_id.slice(0, 4)}`
+    }));
+    await writeSpaces(availableSpaces);
+    renderSpaces();
 
     const invitation = new URLSearchParams(location.search).get('invite');
     if (invitation) {
       document.getElementById('invite-code').value = invitation;
+      document.getElementById('space-invite-input').value = invitation;
       try {
         await redeemInvitation(invitation);
         return;
       } catch (error) {
+        history.replaceState(null, '', location.pathname);
+        if (availableSpaces.length) {
+          await showWorkspace(availableSpaces[0].id);
+          const label = document.getElementById('spaces-error');
+          label.textContent = error.message || 'No se pudo vincular este dispositivo.';
+          label.hidden = false;
+          document.getElementById('spaces-dialog').showModal();
+          return;
+        }
         showSetup(error.message);
         return;
       }
     }
 
-    if (!navigator.onLine && snapshot.espacioId) {
-      spaceId = snapshot.espacioId;
-      updateSnapshot(snapshot);
-      showHome();
-      setStatus('offline', 'Sin conexión');
+    if (availableSpaces.length) {
+      const selectedSpace = availableSpaces.find((space) => space.id === snapshot.espacioId) || availableSpaces[0];
+      await showWorkspace(selectedSpace.id);
       return;
+    }
+
+    if (snapshot.espacioId) {
+      await removeSpaceData(snapshot.espacioId);
+      snapshot = { espacioId: null, listas: [], elementos: [] };
     }
     showSetup();
     setStatus('synced', 'Sincronizado');
@@ -537,12 +712,63 @@ async function verifyDeviceAccess() {
   }
   if (data) return;
 
+  const revokedSpace = spaceId;
   synchronization?.stop();
-  await clearLocalData();
+  await removeSpaceData(revokedSpace);
+  availableSpaces = availableSpaces.filter((space) => space.id !== revokedSpace);
+  await writeSpaces(availableSpaces);
   snapshot = { espacioId: null, listas: [], elementos: [] };
   spaceId = null;
+  renderSpaces();
+  if (availableSpaces.length) {
+    await showWorkspace(availableSpaces[0].id);
+    showToast('El acceso a uno de tus espacios fue revocado.');
+    return;
+  }
   showSetup('El acceso de este dispositivo fue revocado. Puedes volver a vincularlo con una nueva invitación.');
   setStatus('error', 'Acceso revocado');
+}
+
+async function createWorkspace() {
+  await ensureSession();
+  const { data, error } = await client.functions.invoke('crear-espacio', { body: {} });
+  if (error) throw new Error(await getFunctionErrorMessage(error));
+  if (!data?.espacioId) throw new Error('No se recibió el espacio compartido.');
+  await addSpace(data.espacioId);
+  await showWorkspace(data.espacioId);
+  showToast('Espacio creado. Comparte una invitación para vincular a otra persona.');
+}
+
+async function leaveSpace(id) {
+  if (!navigator.onLine) throw new Error('Conéctate a internet para salir del espacio de forma segura.');
+  const space = availableSpaces.find((entry) => entry.id === id);
+  const name = space?.nombre || 'este espacio';
+  if (!window.confirm(`¿Salir de “${name}”? Se revocará este dispositivo y se borrarán de él los datos sin conexión de este espacio. Para volver necesitarás una invitación nueva.`)) return;
+
+  const { data, error } = await client.rpc('salir_espacio', { p_espacio_id: id });
+  if (error) throw error;
+  if (!data) throw new Error('Este dispositivo ya no tiene acceso a ese espacio.');
+
+  const wasCurrent = spaceId === id;
+  if (wasCurrent) synchronization?.stop();
+  await removeSpaceData(id);
+  availableSpaces = availableSpaces.filter((entry) => entry.id !== id);
+  await writeSpaces(availableSpaces);
+  renderSpaces();
+  if (!wasCurrent) {
+    showToast('Saliste del espacio.');
+    return;
+  }
+  if (availableSpaces.length) {
+    await showWorkspace(availableSpaces[0].id);
+  } else {
+    synchronization?.stop();
+    spaceId = null;
+    snapshot = { espacioId: null, listas: [], elementos: [] };
+    showSetup();
+    setStatus('synced', 'Sincronizado');
+  }
+  showToast('Saliste del espacio.');
 }
 
 document.getElementById('theme-toggle').addEventListener('click', () => {
@@ -634,7 +860,7 @@ document.getElementById('add-item-form').addEventListener('submit', async (event
   }
 });
 
-document.getElementById('items-list').addEventListener('change', async (event) => {
+itemsContainer.addEventListener('change', async (event) => {
   const checkbox = event.target.closest('[data-item-action="toggle"]');
   if (!checkbox) return;
   try {
@@ -643,7 +869,13 @@ document.getElementById('items-list').addEventListener('change', async (event) =
     showError(error);
   }
 });
-document.getElementById('items-list').addEventListener('click', async (event) => {
+itemsContainer.addEventListener('click', async (event) => {
+  const text = event.target.closest('[data-item-action="edit"]');
+  if (text) {
+    const item = snapshot.elementos.find((entry) => entry.id === text.dataset.itemId);
+    if (item) beginEditItem(item, text);
+    return;
+  }
   const button = event.target.closest('[data-item-action="delete"]');
   if (!button) return;
   try {
@@ -702,8 +934,8 @@ document.getElementById('create-invite-button').addEventListener('click', async 
   button.disabled = true;
   document.getElementById('devices-error').hidden = true;
   try {
-    const { data, error } = await client.functions.invoke('crear-invitacion', { body: {} });
-    if (error) throw error;
+    const { data, error } = await client.functions.invoke('crear-invitacion', { body: { espacioId: spaceId } });
+    if (error) throw new Error(await getFunctionErrorMessage(error));
     if (!data?.codigo) throw new Error('No se recibió el enlace de invitación.');
     const inviteUrl = new URL(location.href);
     inviteUrl.search = '';
@@ -713,7 +945,7 @@ document.getElementById('create-invite-button').addEventListener('click', async 
     document.getElementById('invite-result').hidden = false;
   } catch (error) {
     const label = document.getElementById('devices-error');
-    label.textContent = error.message || 'No se pudo crear el enlace.';
+    label.textContent = await getFunctionErrorMessage(error);
     label.hidden = false;
   } finally {
     button.disabled = false;
@@ -747,16 +979,75 @@ document.getElementById('create-space').addEventListener('click', async (event) 
   button.disabled = true;
   setupError.hidden = true;
   try {
-    await ensureSession();
-    const { data, error } = await client.functions.invoke('crear-espacio', { body: {} });
-    if (error) throw error;
-    if (!data?.espacioId) throw new Error('No se recibió el espacio compartido.');
-    await showWorkspace(data.espacioId);
-    showToast('Espacio creado. Comparte una invitación para vincular a otra persona.');
+    await createWorkspace();
   } catch (error) {
-    showSetup(error.message || 'No se pudo crear el espacio.');
+    showSetup(await getFunctionErrorMessage(error));
   } finally {
     button.disabled = false;
+  }
+});
+
+document.getElementById('spaces-button').addEventListener('click', () => {
+  document.getElementById('spaces-error').hidden = true;
+  renderSpaces();
+  document.getElementById('spaces-dialog').showModal();
+});
+document.getElementById('spaces-list').addEventListener('click', async (event) => {
+  const leaveButton = event.target.closest('[data-space-leave]');
+  if (leaveButton) {
+    try {
+      await leaveSpace(leaveButton.dataset.spaceLeave);
+    } catch (error) {
+      const label = document.getElementById('spaces-error');
+      label.textContent = error.message || 'No se pudo salir del espacio.';
+      label.hidden = false;
+    }
+    return;
+  }
+
+  const selectButton = event.target.closest('[data-space-select]');
+  if (!selectButton || selectButton.dataset.spaceSelect === spaceId) {
+    document.getElementById('spaces-dialog').close();
+    return;
+  }
+  try {
+    await showWorkspace(selectButton.dataset.spaceSelect);
+    document.getElementById('spaces-dialog').close();
+  } catch (error) {
+    showError(error);
+  }
+});
+document.getElementById('create-space-from-switcher').addEventListener('click', async (event) => {
+  const button = event.currentTarget;
+  button.disabled = true;
+  document.getElementById('spaces-error').hidden = true;
+  try {
+    await createWorkspace();
+    document.getElementById('spaces-dialog').close();
+  } catch (error) {
+    const label = document.getElementById('spaces-error');
+    label.textContent = await getFunctionErrorMessage(error);
+    label.hidden = false;
+  } finally {
+    button.disabled = false;
+  }
+});
+document.getElementById('join-space-form').addEventListener('submit', async (event) => {
+  event.preventDefault();
+  const input = document.getElementById('space-invite-input');
+  const button = event.currentTarget.querySelector('button[type="submit"]');
+  if (button) button.disabled = true;
+  document.getElementById('spaces-error').hidden = true;
+  try {
+    await redeemInvitation(input.value);
+    input.value = '';
+    document.getElementById('spaces-dialog').close();
+  } catch (error) {
+    const label = document.getElementById('spaces-error');
+    label.textContent = error.message || 'No se pudo vincular este dispositivo.';
+    label.hidden = false;
+  } finally {
+    if (button) button.disabled = false;
   }
 });
 

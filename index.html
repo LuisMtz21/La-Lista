@@ -24,6 +24,9 @@
         <span>La Lista</span>
       </a>
       <div class="header-actions">
+        <button id="spaces-button" class="icon-button" type="button" aria-label="Cambiar espacio" title="Espacios" hidden>
+          <svg viewBox="0 0 24 24" aria-hidden="true"><rect x="4" y="4" width="7" height="7" rx="1.5"></rect><rect x="13" y="4" width="7" height="7" rx="1.5"></rect><rect x="4" y="13" width="7" height="7" rx="1.5"></rect><rect x="13" y="13" width="7" height="7" rx="1.5"></rect></svg>
+        </button>
         <span id="sync-status" class="sync-status" role="status" aria-live="polite">
           <span class="status-dot"></span><span id="sync-label">Sin iniciar</span>
         </span>
@@ -44,6 +47,7 @@
             <input id="invite-code" class="form-control" type="text" placeholder="Pega aquí un enlace o código" autocomplete="off">
             <button class="btn btn-primary" type="submit">Unirme</button>
           </form>
+          <p class="invite-note">Cada invitación se usa una sola vez. Si el código ya se canjeó, pide que creen uno nuevo.</p>
           <div class="setup-divider"><span>o</span></div>
           <button id="create-space" class="btn btn-outline-secondary" type="button">Crear un espacio nuevo</button>
           <p id="setup-error" class="form-error" role="alert" hidden></p>
@@ -53,7 +57,7 @@
       <section id="home-view" hidden>
         <div class="page-heading">
           <div>
-            <p class="eyebrow">TU ESPACIO COMPARTIDO</p>
+            <p class="eyebrow">ESPACIO ACTUAL</p>
             <h1 id="home-heading">Mis listas</h1>
           </div>
           <div class="heading-actions">
@@ -141,6 +145,25 @@
         <h3 class="devices-heading">Dispositivos vinculados</h3>
         <div id="devices-list" class="devices-list"></div>
         <p id="devices-error" class="form-error" role="alert" hidden></p>
+      </div>
+    </dialog>
+
+    <dialog id="spaces-dialog" class="app-dialog">
+      <form method="dialog" class="dialog-close-form"><button class="icon-button" aria-label="Cerrar">×</button></form>
+      <div class="dialog-content">
+        <p class="eyebrow">TUS ESPACIOS</p>
+        <h2>Cambiar o salir</h2>
+        <p class="dialog-description">Cambiar de espacio conserva el acceso. Salir revoca este dispositivo; para volver necesitarás una invitación nueva.</p>
+        <div id="spaces-list" class="spaces-list"></div>
+        <button id="create-space-from-switcher" class="btn btn-light w-100" type="button">＋ Crear mi espacio</button>
+        <form id="join-space-form" class="join-space-form">
+          <label for="space-invite-input" class="form-label">Entrar con una invitación</label>
+          <div class="join-form">
+            <input id="space-invite-input" class="form-control" type="text" placeholder="Pega el enlace o código" autocomplete="off">
+            <button class="btn btn-primary" type="submit">Entrar</button>
+          </div>
+        </form>
+        <p id="spaces-error" class="form-error" role="alert" hidden></p>
       </div>
     </dialog>
 

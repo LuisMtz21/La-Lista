@@ -7,16 +7,6 @@ Deno.serve(async (request: Request) => {
   try {
     const { user, supabaseUrl } = await getAuthenticatedUser(request);
     const admin = getAdminClient(supabaseUrl);
-    const { data: existingDevice, error: lookupError } = await admin
-      .from('dispositivos')
-      .select('espacio_id')
-      .eq('auth_user_id', user.id)
-      .is('revocado_en', null)
-      .maybeSingle();
-
-    if (lookupError) throw lookupError;
-    if (existingDevice) return jsonResponse({ espacioId: existingDevice.espacio_id });
-
     const { data: space, error: spaceError } = await admin
       .from('espacios')
       .insert({})

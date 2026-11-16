@@ -1,4 +1,4 @@
-const CACHE_NAME = 'la-lista-v3';
+const CACHE_NAME = 'la-lista-v6';
 const APP_ASSETS = [
   './',
   './index.html',
