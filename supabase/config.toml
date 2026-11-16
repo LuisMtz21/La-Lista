@@ -1,0 +1,10 @@
+project_id = "la-lista"
+
+[functions.crear-espacio]
+verify_jwt = true
+
+[functions.crear-invitacion]
+verify_jwt = true
+
+[functions.canjear-invitacion]
+verify_jwt = true

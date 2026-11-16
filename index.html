@@ -1,0 +1,165 @@
+<!doctype html>
+<html lang="es">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+    <meta name="theme-color" content="#f7f6f2">
+    <meta name="description" content="Listas sencillas, compartidas y sincronizadas.">
+    <meta name="apple-mobile-web-app-capable" content="yes">
+    <meta name="apple-mobile-web-app-status-bar-style" content="default">
+    <meta name="apple-mobile-web-app-title" content="La Lista">
+    <link rel="manifest" href="./manifest.json">
+    <link rel="icon" href="./assets/icons/icon.svg" type="image/svg+xml">
+    <link rel="apple-touch-icon" href="./assets/icons/apple-touch-icon.png">
+    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/css/bootstrap.min.css" rel="stylesheet">
+    <link rel="stylesheet" href="./css/styles.css">
+    <title>La Lista</title>
+  </head>
+  <body>
+    <header class="app-header">
+      <a class="brand" href="./" aria-label="La Lista, inicio">
+        <span class="brand-mark" aria-hidden="true">
+          <svg viewBox="0 0 32 32"><rect x="5" y="6" width="22" height="21" rx="6"></rect><path d="M11 13h10M11 18h7"></path><path class="brand-check" d="m19 22 2 2 4-5"></path></svg>
+        </span>
+        <span>La Lista</span>
+      </a>
+      <div class="header-actions">
+        <span id="sync-status" class="sync-status" role="status" aria-live="polite">
+          <span class="status-dot"></span><span id="sync-label">Sin iniciar</span>
+        </span>
+        <button id="theme-toggle" class="icon-button" type="button" aria-label="Cambiar tema" title="Cambiar tema">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M20.2 15.4A8.5 8.5 0 0 1 8.6 3.8 8.6 8.6 0 1 0 20.2 15.4Z"></path></svg>
+        </button>
+      </div>
+    </header>
+
+    <main class="app-main container">
+      <section id="setup-view" class="setup-view" hidden>
+        <div class="welcome-card">
+          <span class="welcome-icon" aria-hidden="true">✓</span>
+          <h1>Tu espacio para compartir</h1>
+          <p>Crea un espacio compartido o únete al de otra persona con su enlace de invitación.</p>
+          <form id="join-form" class="join-form">
+            <label class="visually-hidden" for="invite-code">Código o enlace de invitación</label>
+            <input id="invite-code" class="form-control" type="text" placeholder="Pega aquí un enlace o código" autocomplete="off">
+            <button class="btn btn-primary" type="submit">Unirme</button>
+          </form>
+          <div class="setup-divider"><span>o</span></div>
+          <button id="create-space" class="btn btn-outline-secondary" type="button">Crear un espacio nuevo</button>
+          <p id="setup-error" class="form-error" role="alert" hidden></p>
+        </div>
+      </section>
+
+      <section id="home-view" hidden>
+        <div class="page-heading">
+          <div>
+            <p class="eyebrow">TU ESPACIO COMPARTIDO</p>
+            <h1 id="home-heading">Mis listas</h1>
+          </div>
+          <div class="heading-actions">
+            <button id="devices-button" class="btn btn-light" type="button">
+              <span aria-hidden="true">↗</span> Compartir
+            </button>
+            <button id="new-list-button" class="btn btn-primary" type="button">
+              <span aria-hidden="true">＋</span> Nueva lista
+            </button>
+          </div>
+        </div>
+        <div class="list-tools">
+          <label class="search-box">
+            <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="10.8" cy="10.8" r="6.8"></circle><path d="m16 16 4.5 4.5"></path></svg>
+            <span class="visually-hidden">Buscar listas</span>
+            <input id="search-input" type="search" placeholder="Buscar listas">
+          </label>
+          <div class="list-tabs" role="tablist" aria-label="Tipo de listas">
+            <button id="active-tab" class="list-tab active" type="button" role="tab" aria-selected="true">Activas</button>
+            <button id="archived-tab" class="list-tab" type="button" role="tab" aria-selected="false">Archivadas</button>
+          </div>
+        </div>
+        <div id="lists-grid" class="lists-grid" aria-live="polite"></div>
+        <div id="empty-state" class="empty-state" hidden>
+          <div class="empty-illustration" aria-hidden="true">☷</div>
+          <h2 id="empty-title">Todavía no hay listas</h2>
+          <p id="empty-description">Crea tu primera lista y compártela al instante.</p>
+          <button id="empty-create-button" class="btn btn-primary" type="button">Crear una lista</button>
+        </div>
+      </section>
+
+      <section id="detail-view" hidden>
+        <div class="detail-heading">
+          <button id="back-button" class="icon-button back-button" type="button" aria-label="Volver a las listas">
+            <svg viewBox="0 0 24 24" aria-hidden="true"><path d="m15 18-6-6 6-6"></path></svg>
+          </button>
+          <div class="detail-title-wrap">
+            <h1 id="detail-title"></h1>
+            <p id="detail-subtitle"></p>
+          </div>
+          <label class="sort-control">
+            <span class="visually-hidden">Orden de elementos</span>
+            <select id="sort-select" class="form-select" aria-label="Orden de elementos">
+              <option value="created">Orden de creación</option>
+              <option value="alpha">Orden alfabético A-Z</option>
+            </select>
+          </label>
+          <div class="dropdown">
+            <button class="icon-button" type="button" data-bs-toggle="dropdown" aria-expanded="false" aria-label="Opciones de lista">
+              <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="5" cy="12" r="1"></circle><circle cx="12" cy="12" r="1"></circle><circle cx="19" cy="12" r="1"></circle></svg>
+            </button>
+            <ul class="dropdown-menu dropdown-menu-end">
+              <li><button id="rename-list-button" class="dropdown-item" type="button">Cambiar título</button></li>
+              <li><button id="archive-list-button" class="dropdown-item" type="button">Archivar lista</button></li>
+              <li><hr class="dropdown-divider"></li>
+              <li><button id="delete-list-button" class="dropdown-item text-danger" type="button">Eliminar lista</button></li>
+            </ul>
+          </div>
+        </div>
+        <form id="add-item-form" class="add-item-form">
+          <span class="add-item-plus" aria-hidden="true">＋</span>
+          <label class="visually-hidden" for="new-item-input">Agregar elemento</label>
+          <input id="new-item-input" type="text" placeholder="Agregar un elemento" autocomplete="off" maxlength="500">
+          <button type="submit" class="btn btn-primary">Agregar</button>
+        </form>
+        <div id="items-list" class="items-list" aria-live="polite"></div>
+      </section>
+    </main>
+
+    <dialog id="devices-dialog" class="app-dialog">
+      <form method="dialog" class="dialog-close-form"><button class="icon-button" aria-label="Cerrar">×</button></form>
+      <div class="dialog-content">
+        <p class="eyebrow">ESPACIO COMPARTIDO</p>
+        <h2>Compartir y dispositivos</h2>
+        <p class="dialog-description">Invita a alguien con un enlace de un solo uso. Solo quien tenga el enlace podrá vincular su dispositivo.</p>
+        <button id="create-invite-button" class="btn btn-primary w-100" type="button">Crear enlace de invitación</button>
+        <div id="invite-result" class="invite-result" hidden>
+          <label for="invite-link">Enlace válido por 24 horas</label>
+          <div class="invite-link-row">
+            <input id="invite-link" class="form-control" readonly>
+            <button id="copy-invite-button" class="btn btn-light" type="button">Copiar</button>
+          </div>
+          <p id="invite-copy-status" class="small-muted" role="status"></p>
+        </div>
+        <h3 class="devices-heading">Dispositivos vinculados</h3>
+        <div id="devices-list" class="devices-list"></div>
+        <p id="devices-error" class="form-error" role="alert" hidden></p>
+      </div>
+    </dialog>
+
+    <dialog id="list-dialog" class="app-dialog compact-dialog">
+      <form method="dialog" class="dialog-close-form"><button class="icon-button" aria-label="Cerrar">×</button></form>
+      <div class="dialog-content">
+        <p class="eyebrow">NUEVA LISTA</p>
+        <h2>Crea una lista</h2>
+        <form id="create-list-form" class="create-list-form">
+          <label for="list-title-input" class="form-label">Título</label>
+          <input id="list-title-input" class="form-control" type="text" maxlength="120" required autocomplete="off" placeholder="Por ejemplo, Para recordar">
+          <p id="list-form-error" class="form-error" role="alert" hidden></p>
+          <button class="btn btn-primary w-100" type="submit">Crear lista</button>
+        </form>
+      </div>
+    </dialog>
+
+    <div id="toast" class="app-toast" role="status" aria-live="polite"></div>
+    <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/js/bootstrap.bundle.min.js"></script>
+    <script type="module" src="./js/app.js"></script>
+  </body>
+</html>
